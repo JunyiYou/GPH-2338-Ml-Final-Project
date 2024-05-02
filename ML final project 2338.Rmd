@@ -1,0 +1,265 @@
+---
+title: "ML final projject"
+author: "Quan Yuan, Junyi You, Wanxuan LIu"
+date: "2024-04-30"
+output: pdf_document
+---
+
+```{r}
+# Import data and running r packages
+Diabetes <- read.csv("Dataset of Diabetes.csv")
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(leaps)
+library(tree)
+library(glmnet)
+library(caret)
+library(MASS)
+```
+
+
+```{r}
+# Cleaning data (checking missing values)
+colSums(is.na(Diabetes))
+
+# Checking variable type in dataset and transferring categorical into factor
+all(sapply(Diabetes, is.character))
+is.character(Diabetes$Gender)
+# we have letter "f" in dataset and change that into capital letter
+Diabetes$Gender <- gsub("f", "F", Diabetes$Gender) 
+Diabetes <- Diabetes %>%
+  mutate_if(is.character, as.factor) %>%
+  mutate(Gender = as.factor(Gender), CLASS = as.factor(CLASS))
+```
+
+
+```{r}
+# Splitting data into train and test data
+set.seed(0)
+n_all <- nrow(Diabetes)
+tr_ind <- sample(n_all, round(0.6*n_all))
+train_data <- Diabetes[tr_ind,]
+test_data <- Diabetes[-tr_ind,]
+```
+
+
+```{r}
+# General visualization of HbA1c in different ages, gender and BMI
+ggplot(Diabetes, aes(x=HbA1c, fill= Gender))+
+  geom_histogram(stat = 'count')+ facet_wrap(~ Gender)
+
+ggplot(Diabetes, aes(x=AGE, y=HbA1c)) + geom_boxplot()
+
+ggplot(Diabetes, aes(x = BMI, y = HbA1c)) + geom_point() 
+```
+
+
+```{r}
+# Create dummy variables for gender as female = "0", male = "1" and we extract
+# "ID", "No_pation" and "CLASS"
+Gender <- model.matrix(~ Gender - 1, data = Diabetes)
+Gender <- Gender[, -1]
+Diabetes.new <- cbind(Gender, dplyr::select(Diabetes, AGE, Urea, Cr, HbA1c, Chol, 
+                                            TG, HDL, LDL, VLDL, BMI))
+# Splitting new dataset into train and test data.
+train_data_new <- Diabetes.new[tr_ind,]
+test_data_new <- Diabetes.new[-tr_ind,]
+```
+
+
+```{r}
+# First checking collinearity by using correlation matrix
+cor(Diabetes.new)
+
+# feature selection
+# creating a general model contains all variables from the new dataset.
+lmod <- lm(HbA1c~., data = Diabetes.new)
+summary(lmod)
+# Eliminating variables which p-values are greater than 0.05
+lmod1 <- lm(HbA1c ~ AGE + Chol + TG + BMI, data = Diabetes.new)
+summary(lmod1)
+
+# Backward Elimination
+lmod <- update(lmod,.~.-HDL)
+summary(lmod)
+lmod <- update(lmod,.~.-VLDL)
+summary(lmod)
+lmod <- update(lmod,.~.-Gender)
+summary(lmod)
+lmod <- update(lmod,.~.-LDL)
+summary(lmod)
+lmod <- update(lmod,.~.-Urea) 
+summary(lmod)
+
+# Model selection 
+# Akaike Information Criterion (AIC)
+b <- regsubsets(HbA1c~.,data=Diabetes.new)
+rs <- summary(b)
+rs$which
+AIC<- 1000*log(rs$rss/1000) + (2:11)*2
+plot(AIC~I(1:10),ylab="AIC", xlab="Number of Predictors")
+which.min(AIC)
+
+# Bayesian information criterion (BIC) 
+BIC <- 1000*log(rs$rss/1000) + (2:11)*log(1000)
+plot(BIC~I(1:10),ylab="BIC", xlab="Number of Predictors")
+which.min(BIC)
+
+# As a result, we decide our linear regression model with 5 predictors which is 
+# lmod <- lm(HbA1c ~ AGE + Cr + Chol + TG + BMI, data = Diabetes.new)
+```
+
+
+```{r}
+##### Linear regression
+# Creating data frame of true response, fitted response and residuals
+df_dia <- data.frame(true_response = Diabetes.new$HbA1c,
+                    fitted_response = lmod$fitted.values,
+                    residual = lmod$residuals)
+head(df_dia)
+summary(lmod)
+
+# Visualization
+# Seeing the scatter plot between age and HbA1c by providing a linear regression line 
+mytheme <- theme(axis.title = element_text(size = 15),
+                 axis.text = element_text(size = 10))
+
+# See the scatter plot between true response and fitted response by adding a regression
+# line (lmod)
+ggplot(data = df_dia, aes(x = true_response, y = fitted_response))+
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "solid") +
+  mytheme
+
+# Checking the model with feature selection 
+df_dia1 <- data.frame(true_response = Diabetes.new$HbA1c,
+                      fitted_response = lmod1$fitted.values,
+                      residual = lmod1$residuals)
+
+# see the scatter plot between true response and fitted response by adding a regression 
+# line (lmod1)
+ggplot(data = df_dia1, aes(x = true_response, y = fitted_response)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "solid") +
+  mytheme
+# After comparing models with 4 predictors and another model with 5 predictors,
+# the points on the model with 5 predictors are more close to the linear regression line.
+# Therefore, we indicate that our best linear model should contain 5 predictors.
+
+# Confidence intervals
+confint(lmod, level = 0.95)
+# Predicting
+df_test <- data.frame(AGE=1, Cr=2, Chol=3, TG=4, BMI=5)
+predict(lmod, newdata = df_test, level = 0.95, interval = "confidence")
+
+# Prediction intervals
+predict(lmod, newdata = df_test, level = 0.95, interval = "prediction")
+
+# Train and testing errors for linear regression model
+pred_lmod_tr <- predict(lmod, newdata = train_data)
+tr_error <- sum((pred_lmod_tr - train_data$HbA1c)^2)
+tr_error
+
+pred_lmod_te <- predict(lmod, newdata = test_data)
+te_error <- sum((pred_lmod_te - test_data$HbA1c)^2)
+te_error
+```
+
+
+```{r}
+##### Techniques to help improving models.
+# Lasso regression
+lasso_dia <- train(
+  HbA1c ~ ., 
+  data = Diabetes.new, 
+  method = "lasso",
+  preProcess = c("center", "scale"),  
+  trControl = trainControl(method = "cv", number = 5)
+)
+summary(lasso_dia)
+lasso_preds <- predict(lasso_dia, newdata = test_data_new)
+mean((lasso_preds - test_data_new$HbA1c)^2)
+
+df_dia_test <- data.frame(true_response = test_data_new$HbA1c,
+                          fitted_response = lasso_preds,
+                          residual = test_data_new$HbA1c - lasso_preds)
+
+ggplot(data = df_dia_test, aes(x = true_response, y = fitted_response)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "solid") + 
+  mytheme
+```
+
+
+```{r}
+# Transformation
+# Square root Transformation
+lmod.sqrt<- lm(sqrt(HbA1c) ~ AGE + Cr + Chol + TG + BMI, data = Diabetes.new)
+df_dia_sqrt <- data.frame(true_response = sqrt(Diabetes.new$HbA1c),
+                    fitted_response = lmod.sqrt$fitted.values,
+                    residual = lmod.sqrt$residuals)
+ggplot(data = df_dia_sqrt, aes(x = true_response, y = fitted_response)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "solid") +
+  mytheme
+
+# Log transformation
+lmod.log<- lm(log(HbA1c) ~ AGE + Cr + Chol + TG + BMI, data = Diabetes.new)
+df_dia_log <- data.frame(true_response = log(Diabetes.new$HbA1c),
+                    fitted_response = lmod.log$fitted.values,
+                    residual = lmod.log$residuals)
+ggplot(data = df_dia_log, aes(x = true_response, y = fitted_response)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "solid") +
+  mytheme
+
+# Boxcox transformation
+boxcox(lmod, plotit=T,lambda = seq(0.5,1, by=0.1))
+bc <- boxcox(lmod, plotit=T,lambda = seq(0.5,1, by=0.1))
+optimal_lambda <- bc$x[which.max(bc$y)] # Finding the optimal(maximum) lambda value in graph.
+optimal_lambda
+
+# Using the lambda value to rewrite the model.
+lmod.lambda <- lm((HbA1c^optimal_lambda - 1) / optimal_lambda ~ AGE + Cr + Chol + 
+                    TG + BMI, data = Diabetes.new)
+df_dia_lambda <- data.frame(
+    true_response = (Diabetes.new$HbA1c^optimal_lambda - 1) / optimal_lambda,
+    fitted_response = lmod.lambda$fitted.values,
+    residual = lmod.lambda$residuals)
+ggplot(data = df_dia_lambda, aes(x = true_response, y = fitted_response)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "solid") +
+  mytheme
+```
+
+
+```{r}
+##### Decision trees
+dia_tree <- tree(HbA1c ~ Gender + AGE + Urea + Cr + Chol + TG + HDL + LDL +
+                   VLDL + BMI, data = Diabetes.new)
+plot(dia_tree)
+text(dia_tree)
+
+## Techniques for improving decision trees
+# Cross-validation to select optimal tree size
+set.seed(0)
+cv.dia_tree <- cv.tree(dia_tree)
+cv.dia_tree_df <- data.frame(size = cv.dia_tree$size, deviance = cv.dia_tree$dev)
+bs <- cv.dia_tree$size[which.min(cv.dia_tree$dev)]
+ggplot(cv.dia_tree_df, mapping = aes(x = size, y = deviance)) + 
+  geom_point(size = 3) + 
+  geom_line() +
+  geom_vline(xintercept = bs, col = "red")
+
+# pruning trees
+dia_tree_prune <- prune.tree(dia_tree, best = bs)
+plot(dia_tree_prune)
+text(dia_tree_prune)
+# The original decision trees provide the best size of sub-trees by after checking
+# the best size of trees.
+
+# Training error 
+pred_HbA1c <- predict(dia_tree_prune, newdata = Diabetes.new)
+mean((pred_HbA1c - Diabetes.new$HbA1c)^2)
+```
